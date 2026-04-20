@@ -231,27 +231,126 @@ Faites preuve de pédagogie et soyez clair dans vos explications et procedures d
 **Exercice 1 :**  
 Quels sont les composants dont la perte entraîne une perte de données ?  
   
-*..Répondez à cet exercice ici..*
+La perte de données survient lorsqu'un composant qui détient physiquement ou référence de manière exclusive les données est supprimé sans mécanisme de protection.
+Composant,Rôle,Perte de données ?
+PersistentVolume (PV) avec Reclaim Policy: Delete,"Stockage physique lié à un backend (disque cloud, NFS…)",OUI — la suppression du PV entraîne la suppression du disque sous-jacent.
+"Backend de stockage (EBS, disque cloud, NFS…)",Support physique réel des données.,OUI — la perte est irréversible.
+PVC avec Delete policy,"Requête de stockage ; si le PV associé est en mode Delete, supprimer le PVC déclenche la suppression du PV et du disque.",OUI (indirectement).
+PVC avec Retain policy,La suppression du PVC libère le PV mais ne supprime pas les données.,NON — les données sont conservées sur le stockage physique.
+Pod,Consommateur du PVC ; sans état propre (stateless).,NON — le Pod ne stocke pas de données persistantes lui-même.
+Deployment / ReplicaSet,Contrôleur garantissant le nombre de Pods actifs.,NON
+etcd (Plan de contrôle K8s),Stocke les métadonnées Kubernetes (objets API).,"NON pour les données applicatives, mais perte de toute la configuration du cluster."
 
 **Exercice 2 :**  
 Expliquez nous pourquoi nous n'avons pas perdu les données lors de la supression du PVC pra-data  
   
-*..Répondez à cet exercice ici..*
+Réponse
+Lors de la suppression du PVC pra-data, les données n'ont pas été perdues car le PersistentVolume associé avait une reclaimPolicy configurée à Retain.
+Explication détaillée du mécanisme
+Cycle de vie d'un PVC avec reclaimPolicy: Retain :
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│   1. PVC "pra-data" créé  →  lié (Bound) au PV                 │
+│                                                                 │
+│   2. Le Pod monte le PVC  →  lecture/écriture sur le disque     │
+│                                                                 │
+│   3. kubectl delete pvc pra-data                                │
+│         │                                                       │
+│         ▼                                                       │
+│   4. PV passe en état "Released"  ←  DONNÉES TOUJOURS LÀ       │
+│      (le disque physique n'est PAS supprimé)                    │
+│                                                                 │
+│   5. Le PV n'est plus "Available" (il garde la ref de l'ancien  │
+│      PVC pour éviter une réaffectation non voulue)              │
+│                                                                 │
+│   6. On peut récupérer les données en créant un nouveau PVC     │
+│      ou en réassignant manuellement le PV                       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
 
 **Exercice 3 :**  
 Quels sont les RTO et RPO de cette solution ?  
-  
-*..Répondez à cet exercice ici..*
+  RPO — Point de récupération
+Dans cet atelier, aucun mécanisme de snapshot ou de sauvegarde périodique n'est mis en place. La reclaimPolicy: Retain protège contre la suppression accidentelle du PVC, mais :
+•	Si une donnée est corrompue ou écrasée sur le volume, elle est perdue
+•	Si le disque physique (backend) tombe en panne, les données sont perdues
+•	Il n'y a pas de point de restauration antérieur possible
+RPO ≈ 0 en cas de suppression de PVC
+(les données sont intactes au moment exact de la suppression)
+RPO = potentiellement toutes les données en cas de corruption ou panne matérielle
+(aucune sauvegarde antérieure disponible)
+RTO — Temps de reprise
+La récupération nécessite des actions manuelles :
+1.	Constater la panne / suppression (~5 min)
+2.	Identifier le PV en état Released (~2 min)
+3.	Éditer le PV pour retirer la claimRef (~3 min)
+4.	Recréer le PVC et vérifier le binding (~3 min)
+5.	Redéployer le Pod et vérifier l'application (~5 min)
+RTO ≈ 15 à 30 minutes (en conditions optimales, avec un opérateur expérimenté)
+Ce RTO est non automatisé et dépend entièrement de l'intervention humaine.
+Tableau de synthèse
+Scénario	RPO	RTO
+Suppression accidentelle du PVC	~0 (données intactes)	15–30 min (manuel)
+Corruption des données sur le volume	Perte totale (pas de backup)	Non défini
+Panne du nœud Kubernetes	~0 (PV indépendant du nœud)	Selon le scheduler (minutes)
+Panne du backend de stockage	Perte totale	Non défini
+
 
 **Exercice 4 :**  
 Pourquoi cette solution (cet atelier) ne peux pas être utilisé dans un vrai environnement de production ? Que manque-t-il ?   
   
-*..Répondez à cet exercice ici..*
-  
+Cette architecture est adaptée à un environnement d'apprentissage, mais elle présente de nombreuses lacunes pour la production.
+  ┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│              ** MANQUE ET IMPACTS ** 
+│                                                                 │
+│   1. Pas de backup      →  RPO = perte totale possible          │
+│                                                                 │
+│   2. Pas de HA (High    →  RTO imprévisible, SLA impossible     │
+│      Availability)                                              │
+│                                                                 │
+│   3. Pas de réplication →  Risque élevé en zone de défaillance  │
+│                                                                 │
+│   4. Reprise manuelle   →  RTO trop long pour la production     │
+│                                                                 │
+│   5. Pas de monitoring  →  Problèmes non détectés (silencieux)  │
+│                                                                 │
+│   6. Pas de chiffrement →  Non-conformité réglementaire (RGPD)  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 **Exercice 5 :**  
 Proposez une archtecture plus robuste.   
   
-*..Répondez à cet exercice ici..*
+Architecture cible recommandée
+┌──────────────────────────────────────────────────────────────────────┐
+│                        ZONE A                  ZONE B                │
+│  ┌─────────────────┐              ┌─────────────────────────────┐    │
+│  │  Control Plane  │◄────etcd────►│      Control Plane          │    │
+│  │   (HA x3)       │              │         (HA x3)             │    │
+│  └────────┬────────┘              └──────────────┬──────────────┘    │
+│           │                                      │                   │
+│  ┌────────▼────────┐              ┌──────────────▼──────────────┐    │
+│  │  Worker Node 1  │              │       Worker Node 2          │    │
+│  │  ┌───────────┐  │              │  ┌───────────────────────┐  │    │
+│  │  │  Pod App  │  │              │  │  Pod App (réplica)    │  │    │
+│  │  └─────┬─────┘  │              │  └──────────┬────────────┘  │    │
+│  └────────┼────────┘              └─────────────┼───────────────┘    │
+│           │                                     │                    │
+│  ┌────────▼─────────────────────────────────────▼────────────────┐  │
+│  │              Stockage Distribué Répliqué                       │  │
+│  │         (Rook/Ceph  ou  Cloud Provider CSI avec réplication)   │  │
+│  │                    ReadWriteMany  +  Snapshots CSI             │  │
+│  └───────────────────────────────┬────────────────────────────────┘  │
+│                                  │                                    │
+│                    ┌─────────────▼────────────────┐                  │
+│                    │   Backup Object Storage       │                  │
+│                    │  (S3 / MinIO / GCS)           │                  │
+│                    │  Velero — backup toutes les   │                  │
+│                    │  heures, rétention 30 jours   │                  │
+│                    └──────────────────────────────┘                  │
+└──────────────────────────────────────────────────────────────────────┘
+
 
 ---------------------------------------------------
 Séquence 6 : Ateliers  
