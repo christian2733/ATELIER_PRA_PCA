@@ -231,70 +231,83 @@ Faites preuve de pédagogie et soyez clair dans vos explications et procedures d
 **Exercice 1 :**  
 Quels sont les composants dont la perte entraîne une perte de données ?  
   
-La perte de données survient lorsqu'un composant qui détient physiquement ou référence de manière exclusive les données est supprimé sans mécanisme de protection.
-Composant,Rôle,Perte de données ?
-PersistentVolume (PV) avec Reclaim Policy: Delete,"Stockage physique lié à un backend (disque cloud, NFS…)",OUI — la suppression du PV entraîne la suppression du disque sous-jacent.
-"Backend de stockage (EBS, disque cloud, NFS…)",Support physique réel des données.,OUI — la perte est irréversible.
-PVC avec Delete policy,"Requête de stockage ; si le PV associé est en mode Delete, supprimer le PVC déclenche la suppression du PV et du disque.",OUI (indirectement).
-PVC avec Retain policy,La suppression du PVC libère le PV mais ne supprime pas les données.,NON — les données sont conservées sur le stockage physique.
-Pod,Consommateur du PVC ; sans état propre (stateless).,NON — le Pod ne stocke pas de données persistantes lui-même.
-Deployment / ReplicaSet,Contrôleur garantissant le nombre de Pods actifs.,NON
-etcd (Plan de contrôle K8s),Stocke les métadonnées Kubernetes (objets API).,"NON pour les données applicatives, mais perte de toute la configuration du cluster."
+Dans cet atelier, une perte de données définitive et irréversible n'est possible que si les deux volumes PVC sont perdus simultanément. Voici pourquoi :
+Les deux volumes critiques
+PVC pra-data — base de données SQLite de production
+•	C'est ici que l'application Flask lit et écrit en permanence.
+•	Sa suppression seule n'entraîne pas de perte définitive : les sauvegardes présentes dans pra-backup permettent la restauration (c'est le scénario 2 de l'atelier).
+PVC pra-backup — archives des sauvegardes horodatées
+•	C'est le filet de sécurité, alimenté toutes les minutes par le CronJob sqlite-backup.
+•	Sa suppression seule n'impacte pas la production immédiatement, mais elle détruit toute capaciter de reprise future.
+La règle fondamentale
+La perte devient irréversible uniquement si pra-data ET pra-backup sont perdus en même temps. Un seul volume survivant suffit à restaurer le service.
+Scénario	Perte de données ?
+Suppression de pra-data seul	❌ Non — restauration possible depuis pra-backup
+Suppression de pra-backup seul	❌ Non — production toujours fonctionnelle
+Suppression des deux simultanément	✅ OUI — perte totale et irréversible
+
+Les composants non critiques
+
+Composant	Pourquoi sa perte n'entraîne pas de perte de données
+Pod Flask	Stateless : la BDD est dans pra-data, pas dans le conteneur. Kubernetes recrée le pod automatiquement.
+Deployment / ReplicaSet	Simple contrôleur Kubernetes, rejouable via kubectl apply.
+CronJob sqlite-backup	Ne détient aucune donnée. Sa suspension arrête les futurs backups mais ne supprime pas les archives existantes dans pra-backup.
+Nœud Kubernetes (worker)	Les PVC K3d sont indépendants du cycle de vie des nœuds.
+
 
 **Exercice 2 :**  
 Expliquez nous pourquoi nous n'avons pas perdu les données lors de la supression du PVC pra-data  
   
 Réponse
-Lors de la suppression du PVC pra-data, les données n'ont pas été perdues car le PersistentVolume associé avait une reclaimPolicy configurée à Retain.
-Explication détaillée du mécanisme
-Cycle de vie d'un PVC avec reclaimPolicy: Retain :
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│   1. PVC "pra-data" créé  →  lié (Bound) au PV                 │
-│                                                                 │
-│   2. Le Pod monte le PVC  →  lecture/écriture sur le disque     │
-│                                                                 │
-│   3. kubectl delete pvc pra-data                                │
-│         │                                                       │
-│         ▼                                                       │
-│   4. PV passe en état "Released"  ←  DONNÉES TOUJOURS LÀ       │
-│      (le disque physique n'est PAS supprimé)                    │
-│                                                                 │
-│   5. Le PV n'est plus "Available" (il garde la ref de l'ancien  │
-│      PVC pour éviter une réaffectation non voulue)              │
-│                                                                 │
-│   6. On peut récupérer les données en créant un nouveau PVC     │
-│      ou en réassignant manuellement le PV                       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+Parce qu'une stratégie de sauvegarde régulière était en place avant le sinistre : le CronJob sqlite-backup copiait la BDD vers pra-backup toutes les minutes. C'est depuis ce volume que la restauration a été effectuée.
+AVANT LE SINISTRE
+─────────────────────────────────────────────────────────────
+T+00:00  → Messages ajoutés dans pra-data (BDD production)
+T+01:00  → CronJob copie pra-data → pra-backup  ✅ backup N
+T+02:00  → CronJob copie pra-data → pra-backup  ✅ backup N+1
+  ...
+SINISTRE
+─────────────────────────────────────────────────────────────
+T+XX:XX  → 💥 kubectl delete pvc pra-data
+              └─► BDD de production DÉTRUITE
+
+RESTAURATION
+─────────────────────────────────────────────────────────────
+T+XX+1   → kubectl apply -f k8s/
+              └─► Nouveau pra-data créé, VIDE (/count = 0)
+T+XX+2   → kubectl apply -f pra/50-job-restore.yaml
+              └─► Copie du dernier backup de pra-backup → pra-data
+T+XX+3   → ✅ /consultation → tous les messages sont restaurés
+
+La non-perte des données est entièrement due à l'anticipation — avoir mis en place des sauvegardes régulières avant le sinistre. C'est la définition même du PRA.             ┘
 
 
 **Exercice 3 :**  
 Quels sont les RTO et RPO de cette solution ?  
-  RPO — Point de récupération
-Dans cet atelier, aucun mécanisme de snapshot ou de sauvegarde périodique n'est mis en place. La reclaimPolicy: Retain protège contre la suppression accidentelle du PVC, mais :
-•	Si une donnée est corrompue ou écrasée sur le volume, elle est perdue
-•	Si le disque physique (backend) tombe en panne, les données sont perdues
-•	Il n'y a pas de point de restauration antérieur possible
-RPO ≈ 0 en cas de suppression de PVC
-(les données sont intactes au moment exact de la suppression)
-RPO = potentiellement toutes les données en cas de corruption ou panne matérielle
-(aucune sauvegarde antérieure disponible)
-RTO — Temps de reprise
-La récupération nécessite des actions manuelles :
-1.	Constater la panne / suppression (~5 min)
-2.	Identifier le PV en état Released (~2 min)
-3.	Éditer le PV pour retirer la claimRef (~3 min)
-4.	Recréer le PVC et vérifier le binding (~3 min)
-5.	Redéployer le Pod et vérifier l'application (~5 min)
-RTO ≈ 15 à 30 minutes (en conditions optimales, avec un opérateur expérimenté)
-Ce RTO est non automatisé et dépend entièrement de l'intervention humaine.
-Tableau de synthèse
-Scénario	RPO	RTO
-Suppression accidentelle du PVC	~0 (données intactes)	15–30 min (manuel)
-Corruption des données sur le volume	Perte totale (pas de backup)	Non défini
-Panne du nœud Kubernetes	~0 (PV indépendant du nœud)	Selon le scheduler (minutes)
-Panne du backend de stockage	Perte totale	Non défini
+
+RPO — Combien de données peut-on perdre ?
+Le CronJob effectue une sauvegarde toutes les minutes. Les données écrites entre le dernier backup et le sinistre sont perdues.
+Exemple :
+  T+00:00  → Backup N réalisé          ✅
+  T+00:45  → 5 messages ajoutés en BDD
+  T+00:55  → 💥 pra-data supprimé
+             → les 5 messages sont perdus (55 secondes de données)
+  T+01:00  → Backup N+1 ne se fera jamais (CronJob suspendu)
+RPO = entre 0 et 60 secondes, selon le moment du sinistre par rapport au dernier backup.
+•	Meilleur cas (juste après un backup) : ~0 seconde perdue
+•	Pire cas (juste avant un backup) : ~60 secondes de données perdues
+________________________________________
+RTO — Combien de temps pour restaurer le service ?
+La procédure de restauration est entièrement manuelle. Elle se décompose ainsi :
+Étape	Action	Durée estimée
+1	Détecter le sinistre, scaler l'app à 0, suspendre le CronJob	~2 min
+2	Supprimer les jobs pendants et le PVC détruit	~1 min
+3	Recréer l'infrastructure (kubectl apply -f k8s/)	~2 min
+4	Lancer le job de restauration (50-job-restore.yaml) et vérifier	~2 min
+5	Relancer le CronJob, rétablir le port-forward, vérifier en ligne	~2 min
+Total		~5 à 10 min
+RTO ≈ 5 à 10 minutes avec un opérateur qui connaît la procédure. Ce RTO dépend entièrement d'une intervention humaine. Sans opérateur disponible (nuit, weekend), il peut facilement dépasser 1 heure.
+
 
 
 **Exercice 4 :**  
