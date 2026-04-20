@@ -350,6 +350,8 @@ Architecture cible recommandée
 │                    │  heures, rétention 30 jours   │                  │
 │                    └──────────────────────────────┘                  │
 └──────────────────────────────────────────────────────────────────────┘
+<img width="681" height="1024" alt="image" src="https://github.com/user-attachments/assets/4a5f8a01-a94d-4f50-a0c1-34dd349843ea" />
+
 
 
 ---------------------------------------------------
