@@ -351,13 +351,208 @@ Difficulté : Moyenne (~2 heures)
 * last_backup_file : nom du dernier backup présent dans /backup
 * backup_age_seconds : âge du dernier backup
 
-*..**Déposez ici une copie d'écran** de votre réussite..*
+<img width="1107" height="272" alt="image" src="https://github.com/user-attachments/assets/950c90d9-9092-4558-b34e-76ba7014143a" />
+
 
 ---------------------------------------------------
 ### **Atelier 2 : Choisir notre point de restauration**  
 Aujourd’hui nous restaurobs “le dernier backup”. Nous souhaitons **ajouter la capacité de choisir un point de restauration**.
 
-*..Décrir ici votre procédure de restauration (votre runbook)..*  
+Suivez ces étapes dans l'ordre :
+
+---
+
+**ÉTAPE 1 — Ajouter des messages pour avoir des données**
+
+```bash
+curl "http://localhost:8080/add?message=message1"
+curl "http://localhost:8080/add?message=message2"
+curl "http://localhost:8080/add?message=message3"
+curl "http://localhost:8080/add?message=message4"
+curl "http://localhost:8080/add?message=message5"
+```
+
+Vérifiez :
+```bash
+curl http://localhost:8080/count
+```
+
+---
+
+**ÉTAPE 2 — Attendre 1 minute que le CronJob sauvegarde**
+
+```bash
+kubectl -n pra get jobs --watch
+```
+Attendez qu'un job `sqlite-backup-xxxx` apparaisse en `Complete`. Faites `CTRL+C` pour quitter.
+
+---
+
+**ÉTAPE 3 — Lister les points de restauration disponibles**
+
+```bash
+kubectl -n pra run debug-backup \
+  --rm -it \
+  --image=alpine \
+  --overrides='
+{
+  "spec": {
+    "containers": [{
+      "name": "debug",
+      "image": "alpine",
+      "command": ["sh"],
+      "stdin": true,
+      "tty": true,
+      "volumeMounts": [{
+        "name": "backup",
+        "mountPath": "/backup"
+      }]
+    }],
+    "volumes": [{
+      "name": "backup",
+      "persistentVolumeClaim": {
+        "claimName": "pra-backup"
+      }
+    }]
+  }
+}'
+```
+
+Dans le shell du pod :
+```bash
+ls -lht /backup/
+exit
+```
+
+**Notez le nom exact d'un fichier backup** — par exemple `app-1776691261.db`.
+
+---
+
+**ÉTAPE 4 — Ajouter des messages APRÈS le backup (données à perdre volontairement)**
+
+```bash
+curl "http://localhost:8080/add?message=message_perdu1"
+curl "http://localhost:8080/add?message=message_perdu2"
+curl "http://localhost:8080/add?message=message_perdu3"
+curl http://localhost:8080/count
+```
+
+Ces messages seront perdus après la restauration — c'est voulu pour simuler le RPO.
+
+---
+
+**ÉTAPE 5 — Stopper l'application et figer le système**
+
+```bash
+kubectl -n pra scale deployment flask --replicas=0
+kubectl -n pra patch cronjob sqlite-backup -p '{"spec":{"suspend":true}}'
+kubectl -n pra delete job --all
+```
+
+Vérification :
+```bash
+kubectl -n pra get pods       # aucun pod flask ne doit tourner
+kubectl -n pra get cronjobs   # SUSPEND doit afficher True
+```
+
+---
+
+**ÉTAPE 6 — Supprimer le PVC pra-data (simulation du sinistre)**
+
+```bash
+kubectl -n pra delete pvc pra-data
+```
+
+Vérification :
+```bash
+kubectl -n pra get pvc    # pra-data ne doit plus apparaître
+```
+
+---
+
+**ÉTAPE 7 — Recréer l'infrastructure**
+
+```bash
+kubectl apply -f k8s/
+```
+
+Vérification :
+```bash
+kubectl -n pra get pvc    # pra-data doit être de nouveau Bound
+```
+
+---
+
+**ÉTAPE 8 — Renseigner le point de restauration dans le job**
+
+Éditez `pra/50-job-restore-custom.yaml` et remplacez le nom du fichier par celui noté à l'étape 3 :
+
+```bash
+sed -i 's/TARGET_FILE=""/TARGET_FILE="app-1776691261.db"/' pra/50-job-restore-custom.yaml
+```
+
+Vérifiez :
+```bash
+grep "TARGET_FILE" pra/50-job-restore-custom.yaml
+```
+
+---
+
+**ÉTAPE 9 — Lancer la restauration**
+
+```bash
+kubectl apply -f pra/50-job-restore-custom.yaml
+```
+
+Surveillez l'exécution :
+```bash
+kubectl -n pra get jobs --watch
+```
+
+Attendez `Complete` puis vérifiez les logs :
+```bash
+kubectl -n pra logs job/sqlite-restore-custom
+```
+
+Sortie attendue :
+```
+[INFO] Restauration depuis : /backup/app-1776691261.db
+[OK] Restauration terminée.
+```
+
+---
+
+**ÉTAPE 10 — Redémarrer l'application et vérifier**
+
+```bash
+kubectl -n pra scale deployment flask --replicas=1
+kubectl -n pra rollout status deployment/flask
+pkill -f "port-forward svc/flask"
+kubectl -n pra port-forward svc/flask 8080:80 >/tmp/web.log 2>&1 &
+```
+
+Vérifiez les données restaurées :
+```bash
+curl http://localhost:8080/count
+curl http://localhost:8080/consultation
+curl http://localhost:8080/status
+```
+
+- `count` doit afficher **5** (les 5 premiers messages)
+- `message_perdu1/2/3` ne doivent **pas** apparaître → c'est le **RPO**
+
+---
+
+**ÉTAPE 11 — Relancer les sauvegardes**
+
+```bash
+kubectl -n pra patch cronjob sqlite-backup -p '{"spec":{"suspend":false}}'
+kubectl -n pra get cronjobs    # SUSPEND doit afficher False
+```
+
+---
+
+
   
 ---------------------------------------------------
 Evaluation
