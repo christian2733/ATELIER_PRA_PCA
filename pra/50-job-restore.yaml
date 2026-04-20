@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: sqlite-restore
+  name: sqlite-restore-custom
   namespace: pra
 spec:
   template:
@@ -10,11 +10,33 @@ spec:
       containers:
         - name: restore
           image: alpine
-          command: ["/bin/sh","-c"]
+          command: ["/bin/sh", "-c"]
           args:
             - |
-              LATEST=$(ls -t /backup/*.db | head -1)
-              cp $LATEST /data/app.db
+              # ─────────────────────────────────────────────────────────────
+              # Point de restauration : remplacer la valeur de TARGET_FILE
+              # par le nom du fichier backup souhaité (obtenu via ls /backup).
+              # Laisser vide ("") pour restaurer automatiquement le plus récent.
+              # ─────────────────────────────────────────────────────────────
+              TARGET_FILE=""
+
+              if [ -z "$TARGET_FILE" ]; then
+                echo "[INFO] Aucun fichier cible spécifié — restauration du dernier backup."
+                TARGET=$(ls -t /backup/*.db | head -1)
+              else
+                TARGET="/backup/$TARGET_FILE"
+              fi
+
+              if [ ! -f "$TARGET" ]; then
+                echo "[ERREUR] Fichier introuvable : $TARGET"
+                echo "[INFO] Fichiers disponibles dans /backup :"
+                ls -lht /backup/
+                exit 1
+              fi
+
+              echo "[INFO] Restauration depuis : $TARGET"
+              cp "$TARGET" /data/app.db
+              echo "[OK] Restauration terminée."
           volumeMounts:
             - name: data
               mountPath: /data
