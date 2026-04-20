@@ -323,33 +323,7 @@ Cette architecture est adaptée à un environnement d'apprentissage, mais elle p
 Proposez une archtecture plus robuste.   
   
 Architecture cible recommandée
-┌──────────────────────────────────────────────────────────────────────┐
-│                        ZONE A                  ZONE B                │
-│  ┌─────────────────┐              ┌─────────────────────────────┐    │
-│  │  Control Plane  │◄────etcd────►│      Control Plane          │    │
-│  │   (HA x3)       │              │         (HA x3)             │    │
-│  └────────┬────────┘              └──────────────┬──────────────┘    │
-│           │                                      │                   │
-│  ┌────────▼────────┐              ┌──────────────▼──────────────┐    │
-│  │  Worker Node 1  │              │       Worker Node 2          │    │
-│  │  ┌───────────┐  │              │  ┌───────────────────────┐  │    │
-│  │  │  Pod App  │  │              │  │  Pod App (réplica)    │  │    │
-│  │  └─────┬─────┘  │              │  └──────────┬────────────┘  │    │
-│  └────────┼────────┘              └─────────────┼───────────────┘    │
-│           │                                     │                    │
-│  ┌────────▼─────────────────────────────────────▼────────────────┐  │
-│  │              Stockage Distribué Répliqué                       │  │
-│  │         (Rook/Ceph  ou  Cloud Provider CSI avec réplication)   │  │
-│  │                    ReadWriteMany  +  Snapshots CSI             │  │
-│  └───────────────────────────────┬────────────────────────────────┘  │
-│                                  │                                    │
-│                    ┌─────────────▼────────────────┐                  │
-│                    │   Backup Object Storage       │                  │
-│                    │  (S3 / MinIO / GCS)           │                  │
-│                    │  Velero — backup toutes les   │                  │
-│                    │  heures, rétention 30 jours   │                  │
-│                    └──────────────────────────────┘                  │
-└──────────────────────────────────────────────────────────────────────┘
+
 <img width="681" height="1024" alt="image" src="https://github.com/user-attachments/assets/4a5f8a01-a94d-4f50-a0c1-34dd349843ea" />
 
 
