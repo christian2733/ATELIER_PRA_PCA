@@ -351,7 +351,8 @@ Difficulté : Moyenne (~2 heures)
 * last_backup_file : nom du dernier backup présent dans /backup
 * backup_age_seconds : âge du dernier backup
 
-<img width="1107" height="272" alt="image" src="https://github.com/user-attachments/assets/950c90d9-9092-4558-b34e-76ba7014143a" />
+<img width="1113" height="325" alt="image" src="https://github.com/user-attachments/assets/a4c8cb96-44eb-438d-beff-2ad940404838" />
+
 
 
 ---------------------------------------------------
